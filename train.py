@@ -1,5 +1,5 @@
 # =========================
-# 🧠 CPT SCRIPT (HF TRAINER)
+# 🧠 CPT SCRIPT (HF + CSV TEXT ONLY)
 # =========================
 
 import torch
@@ -11,25 +11,50 @@ from transformers import (
     TrainingArguments,
     DataCollatorForLanguageModeling,
 )
+from huggingface_hub import login
+
+# =========================
+# 🔑 LOGIN
+# =========================
+
+login()  # or login("hf_xxx")
 
 # =========================
 # ⚙️ CONFIG
 # =========================
 
-MODEL_NAME = "your-moe-model"   # base model
-DATASET_NAME = "your-cpt-dataset"
+MODEL_NAME = "DavidAU/Llama-3.2-8X3B-MOE-Dark-Champion-Instruct-uncensored-abliterated-18.4B"
+DATASET_NAME = "Colin1337X/ZoinkedRP"
 
-OUTPUT_DIR = "./cpt_model"
+OUTPUT_REPO = "Colin1337X/zoinkedrp-cpt"
+
 MAX_LENGTH = 2048
 
 # =========================
 # 📦 LOAD DATASET
 # =========================
 
-dataset = load_dataset(DATASET_NAME)
+dataset = load_dataset(DATASET_NAME, split="train")
 
-# Expecting:
-# {"text": "..."} format
+# Keep ONLY text column
+dataset = dataset.remove_columns(
+    [col for col in dataset.column_names if col != "text"]
+)
+
+# =========================
+# 🧹 CLEAN DATA
+# =========================
+
+def clean(example):
+    text = example["text"]
+    if text is None:
+        return {"text": ""}
+    return {"text": text.strip()}
+
+dataset = dataset.map(clean)
+
+# Remove empty rows
+dataset = dataset.filter(lambda x: len(x["text"]) > 0)
 
 # =========================
 # 🔤 TOKENIZER
@@ -53,17 +78,17 @@ dataset = dataset.map(tokenize, batched=True, num_proc=4)
 
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
-    torch_dtype=torch.float16,
+    torch_dtype=torch.bfloat16,   # H100 sweet spot
     device_map="auto",
 )
 
 # =========================
-# 🧪 DATA COLLATOR
+# 📚 DATA COLLATOR
 # =========================
 
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
-    mlm=False,  # causal LM
+    mlm=False,
 )
 
 # =========================
@@ -71,21 +96,24 @@ data_collator = DataCollatorForLanguageModeling(
 # =========================
 
 training_args = TrainingArguments(
-    output_dir=OUTPUT_DIR,
+    output_dir="./cpt",
 
     per_device_train_batch_size=2,
     gradient_accumulation_steps=8,
 
     learning_rate=1e-5,
-    num_train_epochs=1,   # IMPORTANT: keep small
+    num_train_epochs=1,   # DO NOT increase
 
     logging_steps=50,
     save_steps=1000,
 
-    fp16=True,
-    bf16=False,
+    bf16=True,   # faster on H100
+    fp16=False,
 
     report_to="none",
+
+    push_to_hub=True,
+    hub_model_id=OUTPUT_REPO,
 )
 
 # =========================
@@ -95,17 +123,17 @@ training_args = TrainingArguments(
 trainer = Trainer(
     model=model,
     args=training_args,
-    train_dataset=dataset["train"],
+    train_dataset=dataset,
     data_collator=data_collator,
 )
 
 trainer.train()
 
 # =========================
-# 💾 SAVE
+# 💾 SAVE + PUSH
 # =========================
 
-model.save_pretrained(f"{OUTPUT_DIR}/final")
-tokenizer.save_pretrained(f"{OUTPUT_DIR}/final")
+model.push_to_hub(OUTPUT_REPO)
+tokenizer.push_to_hub(OUTPUT_REPO)
 
-print("✅ CPT DONE")
+print("✅ CPT COMPLETE + UPLOADED")
